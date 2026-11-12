@@ -1,0 +1,638 @@
+
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DRIVE RUSH 14.0</title>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 20px;
+  background: #101827;
+  color: white;
+  font-family: system-ui, sans-serif;
+}
+#game {
+  max-width: 650px;
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.hud {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+  font-size: 12px;
+  color: #dbeafe;
+}
+.stat {
+  background: #1d2b3e;
+  border-radius: 9px;
+  padding: 8px;
+  text-align: center;
+}
+.stat b {
+  display: block;
+  font-size: 17px;
+  color: #facc15;
+}
+canvas {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 12px;
+}
+button {
+  background: #26364b;
+  border: 1px solid #52647a;
+  border-radius: 10px;
+  padding: 11px 3px;
+  color: white;
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+}
+button:disabled { opacity: .4; cursor: default; }
+button:active { background: #3b82f6; }
+.controls {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.reward {
+  background: #24364b;
+  border: 1px solid #52647a;
+  border-radius: 12px;
+  padding: 10px;
+}
+.cars {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 7px;
+}
+.carchoice {
+  padding: 8px 3px;
+  text-align: center;
+  border-radius: 9px;
+  background: #172538;
+  border: 1px solid #43546a;
+  font-size: 12px;
+}
+.carchoice.selected { border: 2px solid #facc15; }
+.swatch {
+  width: 28px;
+  height: 18px;
+  border-radius: 6px;
+  margin: 0 auto 5px;
+}
+.hint {
+  text-align: center;
+  font-size: 12px;
+  color: #aab8ca;
+}
+#message {
+  text-align: center;
+  font-size: 14px;
+  color: #fde68a;
+  min-height: 22px;
+}
+</style>
+</head>
+<body>
+
+<div id="game">
+  <div class="hud">
+    <div class="stat">속도<b id="speed">80 km/h</b></div>
+    <div class="stat">코인<b id="coins">0</b></div>
+    <div class="stat">포인트<b id="points">0 P</b></div>
+  </div>
+
+  <canvas id="canvas" width="600" height="700"></canvas>
+
+  <div class="hud">
+    <div class="stat">주행 거리<b id="distance">0 m</b></div>
+    <div class="stat">연속 수집<b id="combo">0회</b></div>
+    <div class="stat">다음 보상<b id="next">500 m</b></div>
+  </div>
+
+  <div class="controls">
+    <button id="left">← 왼쪽</button>
+    <button id="right">오른쪽 →</button>
+    <button id="brake">감속</button>
+    <button id="gas">가속</button>
+  </div>
+
+  <div class="controls">
+    <button id="pause">일시정지</button>
+    <button id="reset" style="grid-column:span 3">새 게임</button>
+  </div>
+
+  <div class="reward">
+    <div style="display:flex;justify-content:space-between;margin-bottom:10px">
+      <b>🚗 자동차 컬렉션</b>
+      <span id="garage" style="font-size:12px;color:#facc15">1 / 6 해금</span>
+    </div>
+    <div class="cars" id="carChoices"></div>
+    <div class="hint" style="margin-top:10px">
+      포인트를 모아 새로운 자동차를 해금해 봐!
+    </div>
+  </div>
+
+  <div id="message">코인을 모으고 새로운 자동차를 해금해 보자!</div>
+  <div class="hint">
+    ← → 차선 변경 · ↑ 가속 · ↓ 감속 · Space 일시정지
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const canvas = $("canvas");
+const ctx = canvas.getContext("2d");
+
+const W = 600, H = 700, HY = 270;
+
+let lane = 1;
+let visualLane = 1;
+let speed = 80;
+let distance = 0;
+let offset = 0;
+let cars = [];
+let coinsOnRoad = [];
+let spawn = 0;
+let coinSpawn = 0;
+let paused = false;
+let last = 0;
+
+let points = 0;
+let totalCoins = 0;
+let combo = 0;
+let selected = 0;
+let unlocked = [0];
+let nextMilestone = 500;
+
+const skins = [
+  {name:"클래식", color:"#e8e9ed", cost:0},
+  {name:"루비", color:"#dc5360", cost:100},
+  {name:"오션", color:"#348bd0", cost:250},
+  {name:"민트", color:"#4bc5a2", cost:450},
+  {name:"라벤더", color:"#a18bdf", cost:700},
+  {name:"골드", color:"#e6b94e", cost:1000}
+];
+
+const trafficColors = [
+  "#d94f55", "#e5a13a", "#e7e9ed",
+  "#8c80d5", "#3db69b"
+];
+
+function roadWidth(z) {
+  return 70 + 500 * z;
+}
+function roadLeft(z) {
+  return 300 - roadWidth(z) / 2;
+}
+function roadRight(z) {
+  return 300 + roadWidth(z) / 2;
+}
+function perspectiveY(z) {
+  return HY + (H - HY) * z;
+}
+function boundary(i, z) {
+  return roadLeft(z) + roadWidth(z) * i / 3;
+}
+function laneCenter(i, z) {
+  return (boundary(i, z) + boundary(i + 1, z)) / 2;
+}
+
+function showMessage(text) {
+  $("message").textContent = text;
+}
+
+function move(d) {
+  if (!paused) {
+    lane = Math.max(0, Math.min(2, lane + d));
+  }
+}
+
+function updateHUD() {
+  $("speed").textContent = Math.round(speed) + " km/h";
+  $("coins").textContent = totalCoins;
+  $("points").textContent = points + " P";
+  $("distance").textContent = Math.floor(distance) + " m";
+  $("combo").textContent = combo + "회";
+  $("next").textContent =
+    Math.max(0, Math.ceil(nextMilestone - distance)) + " m";
+}
+
+function buildGarage() {
+  $("carChoices").innerHTML = "";
+
+  skins.forEach((skin, index) => {
+    const button = document.createElement("button");
+    const owned = unlocked.includes(index);
+
+    button.className =
+      "carchoice" + (selected === index ? " selected" : "");
+
+    button.innerHTML = `
+      <div class="swatch" style="background:${skin.color}"></div>
+      <b>${skin.name}</b>
+      <div>${owned ? "선택" : skin.cost + " P"}</div>
+    `;
+
+    button.onclick = () => {
+      if (owned) {
+        selected = index;
+        showMessage(skin.name + " 자동차를 선택했어!");
+      } else if (points >= skin.cost) {
+        points -= skin.cost;
+        unlocked.push(index);
+        selected = index;
+        showMessage("🎉 " + skin.name + " 자동차 해금 성공!");
+      } else {
+        showMessage((skin.cost - points) + " P가 더 필요해!");
+      }
+
+      buildGarage();
+      updateHUD();
+    };
+
+    $("carChoices").appendChild(button);
+  });
+
+  $("garage").textContent = unlocked.length + " / 6 해금";
+}
+
+function resetGame() {
+  lane = 1;
+  visualLane = 1;
+  speed = 80;
+  distance = 0;
+  offset = 0;
+  cars = [];
+  coinsOnRoad = [];
+  spawn = 0;
+  coinSpawn = 0;
+  combo = 0;
+  nextMilestone = 500;
+  paused = false;
+
+  $("pause").textContent = "일시정지";
+  showMessage("새로운 주행 시작! 코인을 모아 보자!");
+  updateHUD();
+}
+
+function drawCar(x, y, scale, color) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale);
+
+  ctx.fillStyle = "#141a21";
+  ctx.fillRect(-39, 12, 10, 22);
+  ctx.fillRect(29, 12, 10, 22);
+  ctx.fillRect(-39, 47, 10, 19);
+  ctx.fillRect(29, 47, 10, 19);
+
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(-29, 3);
+  ctx.lineTo(29, 3);
+  ctx.lineTo(36, 58);
+  ctx.lineTo(-36, 58);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = "#263e50";
+  ctx.beginPath();
+  ctx.moveTo(-22, 12);
+  ctx.lineTo(22, 12);
+  ctx.lineTo(26, 31);
+  ctx.lineTo(-26, 31);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = "#e8d7a8";
+  ctx.fillRect(-28, 43, 12, 5);
+  ctx.fillRect(16, 43, 12, 5);
+
+  ctx.restore();
+}
+
+function drawTree(x, y, scale) {
+  ctx.fillStyle = "#594735";
+  ctx.fillRect(x - 3*scale, y - 30*scale, 6*scale, 35*scale);
+
+  ctx.fillStyle = "#28583b";
+  ctx.beginPath();
+  ctx.arc(x, y - 35*scale, 18*scale, 0, Math.PI*2);
+  ctx.fill();
+}
+
+function drawCoin(x, y, scale) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale);
+
+  ctx.fillStyle = "rgba(0,0,0,.2)";
+  ctx.beginPath();
+  ctx.ellipse(2, 5, 12, 5, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  ctx.fillStyle = "#facc15";
+  ctx.beginPath();
+  ctx.arc(0, 0, 12, 0, Math.PI*2);
+  ctx.fill();
+
+  ctx.strokeStyle = "#fff1a6";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(0, 0, 8, 0, Math.PI*2);
+  ctx.stroke();
+
+  ctx.fillStyle = "#9b6500";
+  ctx.font = "bold 12px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("P", 0, 1);
+
+  ctx.restore();
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  // 하늘
+  const sky = ctx.createLinearGradient(0, 0, 0, HY);
+  sky.addColorStop(0, "#76b5df");
+  sky.addColorStop(1, "#dce9e9");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, HY);
+
+  // 배경
+  ctx.fillStyle = "#6b8e70";
+  ctx.beginPath();
+  ctx.moveTo(0, HY);
+  ctx.lineTo(0, 235);
+  ctx.lineTo(55, 220);
+  ctx.lineTo(125, 245);
+  ctx.lineTo(190, 226);
+  ctx.lineTo(250, HY);
+  ctx.lineTo(350, HY);
+  ctx.lineTo(410, 226);
+  ctx.lineTo(475, 245);
+  ctx.lineTo(540, 220);
+  ctx.lineTo(600, 235);
+  ctx.lineTo(600, HY);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = "#78966f";
+  ctx.fillRect(0, HY, W, H - HY);
+
+  // 도로
+  ctx.fillStyle = "#3d4249";
+  ctx.beginPath();
+  ctx.moveTo(roadLeft(0), HY);
+  ctx.lineTo(roadRight(0), HY);
+  ctx.lineTo(roadRight(1), H);
+  ctx.lineTo(roadLeft(1), H);
+  ctx.closePath();
+  ctx.fill();
+
+  // 도로 가장자리
+  ctx.strokeStyle = "#f4f0dc";
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(roadLeft(0), HY);
+  ctx.lineTo(roadLeft(1), H);
+  ctx.moveTo(roadRight(0), HY);
+  ctx.lineTo(roadRight(1), H);
+  ctx.stroke();
+
+  // 차선 점선
+  for (let i = 1; i <= 2; i++) {
+    for (let j = 0; j < 10; j++) {
+      const p = (j * 105 + offset) % 500;
+      const z = (p / 500) ** 2;
+      const Y = perspectiveY(z);
+      const X = boundary(i, z);
+
+      ctx.fillStyle = "#f4efd9";
+      ctx.fillRect(X - (1 + z*2), Y, 2 + z*4, 3 + z*23);
+    }
+  }
+
+  // 가로수
+  for (let j = 0; j < 12; j++) {
+    const z = (((j*85 + offset*.7) % 500) / 500) ** 2;
+    const Y = perspectiveY(z);
+    const scale = .12 + z*.8;
+    const gap = 22 + z*30;
+
+    drawTree(roadLeft(z) - gap, Y, scale);
+    drawTree(roadRight(z) + gap, Y, scale);
+  }
+
+  // 코인
+  coinsOnRoad.forEach(v => {
+    const z = Math.max(0, Math.min(1, (v.y-HY)/(H-HY)));
+    drawCoin(laneCenter(v.lane, z), v.y, .25 + z*.85);
+  });
+
+  // 다른 자동차
+  cars.forEach(v => {
+    const z = Math.max(0, Math.min(1, (v.y-HY)/(H-HY)));
+    drawCar(laneCenter(v.lane, z), v.y, .15 + z*.8, v.color);
+  });
+
+  // 운전석 프레임
+  ctx.fillStyle = "#141a23";
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(18, 0);
+  ctx.lineTo(35, 350);
+  ctx.lineTo(0, 390);
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.moveTo(600, 0);
+  ctx.lineTo(582, 0);
+  ctx.lineTo(565, 350);
+  ctx.lineTo(600, 390);
+  ctx.fill();
+
+  // 내 자동차 보닛
+  const px = laneCenter(visualLane, 1);
+  const lw = roadWidth(1)/3;
+  const skin = skins[selected];
+
+  ctx.fillStyle = "#101820";
+  ctx.beginPath();
+  ctx.moveTo(px-lw*.37, 610);
+  ctx.lineTo(px-lw*.25, 575);
+  ctx.lineTo(px+lw*.25, 575);
+  ctx.lineTo(px+lw*.37, 610);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = skin.color;
+  ctx.beginPath();
+  ctx.moveTo(px-lw*.29, 606);
+  ctx.lineTo(px-lw*.20, 584);
+  ctx.lineTo(px+lw*.20, 584);
+  ctx.lineTo(px+lw*.29, 606);
+  ctx.closePath();
+  ctx.fill();
+
+  // 대시보드
+  ctx.fillStyle = "#273642";
+  ctx.beginPath();
+  ctx.moveTo(0, 700);
+  ctx.lineTo(70, 630);
+  ctx.lineTo(530, 630);
+  ctx.lineTo(600, 700);
+  ctx.fill();
+
+  // 핸들
+  ctx.strokeStyle = "#10151c";
+  ctx.lineWidth = 20;
+  ctx.beginPath();
+  ctx.arc(300, 690, 65, Math.PI*1.08, Math.PI*1.92);
+  ctx.stroke();
+}
+
+function update(dt) {
+  if (paused) return;
+
+  visualLane += (lane-visualLane)*Math.min(1, dt*5);
+  offset += speed*dt*1.7;
+  distance += speed*dt/3.6;
+  spawn += dt;
+  coinSpawn += dt;
+
+  // 자동차 생성
+  if (spawn > Math.max(.8, 2.4-speed/120)) {
+    spawn = 0;
+    const l = Math.floor(Math.random()*3);
+
+    if (!cars.some(v => v.lane===l && v.y>360)) {
+      cars.push({
+        lane: l,
+        y: HY,
+        color: trafficColors[
+          Math.floor(Math.random()*trafficColors.length)
+        ]
+      });
+    }
+  }
+
+  // 코인 생성
+  if (coinSpawn > 1.05) {
+    coinSpawn = 0;
+    const l = Math.floor(Math.random()*3);
+    coinsOnRoad.push({lane:l, y:HY});
+  }
+
+  const travel = (speed/3.6*1.9+30)*dt;
+
+  cars.forEach(v => v.y += travel);
+  coinsOnRoad.forEach(v => v.y += travel);
+
+  cars = cars.filter(v => v.y < H+30);
+
+  // 코인 수집
+  const remainingCoins = [];
+
+  coinsOnRoad.forEach(v => {
+    if (v.lane===lane && v.y>545 && v.y<635) {
+      totalCoins++;
+      points += 10;
+      combo++;
+
+      if (combo % 3 === 0) {
+        points += 15;
+        showMessage("✨ 연속 수집 보너스! +15 P");
+      } else {
+        showMessage("🪙 코인 획득! +10 P");
+      }
+    } else if (v.y < 650) {
+      remainingCoins.push(v);
+    }
+  });
+
+  coinsOnRoad = remainingCoins;
+
+  // 충돌 확인
+  for (const v of cars) {
+    if (v.lane===lane && v.y>555 && v.y<630) {
+      paused = true;
+      combo = 0;
+      showMessage("앞차와 가까워졌어! 새 게임으로 다시 도전해 봐!");
+    }
+  }
+
+  // 거리 보상
+  while (distance >= nextMilestone) {
+    points += 50;
+    showMessage("🏁 " + nextMilestone + " m 달성! 거리 보상 +50 P");
+    nextMilestone += 500;
+  }
+
+  updateHUD();
+}
+
+function loop(time) {
+  const dt = Math.min(.04, (time-last)/1000 || 0);
+  last = time;
+
+  update(dt);
+  draw();
+
+  requestAnimationFrame(loop);
+}
+
+// 키보드 조작
+function handleKey(e) {
+  if ([
+    "ArrowLeft", "ArrowRight",
+    "ArrowUp", "ArrowDown", " "
+  ].includes(e.key)) e.preventDefault();
+
+  if (e.repeat) return;
+
+  if (e.key==="ArrowLeft") move(-1);
+  if (e.key==="ArrowRight") move(1);
+  if (e.key==="ArrowUp") speed=Math.min(160,speed+10);
+  if (e.key==="ArrowDown") speed=Math.max(30,speed-10);
+
+  if (e.code==="Space") {
+    paused = !paused;
+    $("pause").textContent = paused ? "계속하기" : "일시정지";
+  }
+}
+
+window.addEventListener("keydown", handleKey);
+
+// 버튼
+$("left").onclick = () => move(-1);
+$("right").onclick = () => move(1);
+$("gas").onclick = () => speed=Math.min(160,speed+10);
+$("brake").onclick = () => speed=Math.max(30,speed-10);
+
+$("pause").onclick = () => {
+  paused = !paused;
+  $("pause").textContent = paused ? "계속하기" : "일시정지";
+};
+
+$("reset").onclick = resetGame;
+
+// 시작
+buildGarage();
+updateHUD();
+requestAnimationFrame(loop);
+</script>
+
+</body>
+</html>
